@@ -2,130 +2,185 @@
 
 from __future__ import annotations
 from abc import ABC, abstractmethod
-from typing import Optional, Any
 from dataclasses import dataclass
+from typing import Optional, Any
 import threading
 import queue
 import random
 import time
+import sqlite3
+
+
+DB_PATH = "border_simulation.db"
+
+# Get data into SQL DB through SQLite
+def db():
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""CREATE TABLE IF NOT EXISTS results (id INTEGER PRIMARY KEY AUTOINCREMENT,
+            attempt_id INTEGER,medium TEXT,method TEXT,entry_type TEXT,has_documents INTEGER,
+            suspicious INTEGER,result TEXT,reason TEXT,caught INTEGER,officer_id INTEGER)""")
+        conn.commit()
+
+
+def save_result(attempt, officer_id: int):
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+        INSERT INTO results (
+            attempt_id, medium, method, entry_type,
+            has_documents, suspicious, result, reason,
+            caught, officer_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       (attempt.attempt_id,attempt.medium,attempt.method,attempt.entry_type,
+            int(attempt.has_documents),int(attempt.suspicious),attempt.result,attempt.reason,
+            None if attempt.caught is None else int(attempt.caught),officer_id))
+        conn.commit()
+
+# Model
 
 @dataclass
 class CrossingAttempt:
     attempt_id: int
-
-    # Type of crossing:
-    # "legal" or "illegal"
-    entry_type: str
-
-    # Whether this attempt has valid documents
+    medium: str                 # water / air / land
+    method: str                 # swimming / boat / plane / vehicle / etc.
+    entry_type: str             # legal / illegal
     has_documents: bool
-
-
-    # Security check
     suspicious: bool
-
-    # Special event
-    # jetski, catapult, etc
-    special_event: Optional[str] = None
-
-    # "Accepted", "Rejected", "Caught", "Not Caught"
     result: str = "Pending"
-
-    # Why?
     reason: str = ""
-
-    # True/False if relevant for caught/not caught situations
     caught: Optional[bool] = None
 
 
-# SHARED STATISTICS ( protected with a lock)
+# Design Pattern 1) --> Strategy
 
-class Stats:
-    def __init__(self):
-        self.total_attempts = 0
-
-        # Counts of final outcomes
-        self.accepted = 0
-        self.rejected = 0
-        self.caught = 0
-        self.not_caught = 0
-
-        # Counts of entry types
-        self.legal_attempts = 0
-        self.illegal_attempts = 0
-
-        # Total special event
-        self.special_events_triggered = 0
-
-        # Count each special event separately  <---- EDIT EVENTS
-        self.special_event_counts = {
-            "jetski": 0,  # <---- EDIT EVENTS
-            "catapult": 0,   # <---- EDIT EVENTS
-            "tunnel": 0,    # <---- EDIT EVENTS
-            "fence_jump": 0     # <---- EDIT EVENTS
-        }
-
-        # Save text  of what happened during the simulation
-        self.log = []
-
-        # Lock protects all shared updates
-        # Without this, multiple threads could update stats at the same time
-        # and cause race conditions
-        self.lock = threading.Lock()
-
-    def add_log(self, message: str):
-        # lock for log
-        with self.lock:
-            self.log.append(message)
-
-    def update_result(self, attempt: CrossingAttempt):
-        # counters lock
-        with self.lock:
-            self.total_attempts += 1
-
-            # Count legal vs illegal attempts
-            if attempt.entry_type == "legal":
-                self.legal_attempts += 1
-            else:
-                self.illegal_attempts += 1
-
-            # Count special event( if happende)
-            if attempt.special_event is not None:
-                self.special_events_triggered += 1
-                if attempt.special_event in self.special_event_counts:
-                    self.special_event_counts[attempt.special_event] += 1
-
-            # Count final result category
-            if attempt.result == "Accepted":
-                self.accepted += 1
-            elif attempt.result == "Rejected":
-                self.rejected += 1
-            elif attempt.result == "Caught":
-                self.caught += 1
-            elif attempt.result == "Not Caught":
-                self.not_caught += 1
-
-    def print_summary(self):
-        print("\n" + "=" * 60)
-        print("FINAL SIMULATION SUMMARY")
-        print("=" * 60)
-        print(f"Total attempts processed: {self.total_attempts}")
-        print(f"Legal attempts:          {self.legal_attempts}")
-        print(f"Illegal attempts:        {self.illegal_attempts}")
-        print(f"Accepted:                {self.accepted}")
-        print(f"Rejected:                {self.rejected}")
-        print(f"Caught:                  {self.caught}")
-        print(f"Not Caught:              {self.not_caught}")
-        print(f"Special events total:    {self.special_events_triggered}")
-
-        print("\nSpecial event breakdown:")
-        for event_name, count in self.special_event_counts.items():
-            print(f"  {event_name}: {count}")
-
-        print("=" * 60)
+class AttemptStrategy(ABC):
+    @abstractmethod
+    def build(self, attempt_id: int) -> CrossingAttempt:
+        pass
 
 
-#CHAIN OF RESPONSIBILITY BASE CLASSES
+class WaterStrategy(AttemptStrategy):
+    def build(self, attempt_id: int) -> CrossingAttempt:
+        entry_type = random.choices(["legal", "illegal"], weights=[65, 35], k=1)[0]
+
+        if entry_type == "legal":
+            method = "boat"
+            has_documents = random.random() < 0.90
+        else:
+            method = random.choice(["swimming", "jetski"])
+            has_documents = False
+
+        suspicious = random.random() < 0.15
+
+        return CrossingAttempt(
+            attempt_id=attempt_id,
+            medium="water",
+            method=method,
+            entry_type=entry_type,
+            has_documents=has_documents,
+            suspicious=suspicious,
+        )
+
+
+class AirStrategy(AttemptStrategy):
+    def build(self, attempt_id: int) -> CrossingAttempt:
+        entry_type = random.choices(["legal", "illegal"], weights=[70, 30], k=1)[0]
+
+        if entry_type == "legal":
+            method = "plane"
+            has_documents = random.random() < 0.95
+        else:
+            method = random.choice(["unauthorized plane", "catapult"])
+            has_documents = False
+
+        suspicious = random.random() < 0.10
+
+        return CrossingAttempt(
+            attempt_id=attempt_id,
+            medium="air",
+            method=method,
+            entry_type=entry_type,
+            has_documents=has_documents,
+            suspicious=suspicious,
+        )
+
+
+class LandStrategy(AttemptStrategy):
+    def build(self, attempt_id: int) -> CrossingAttempt:
+        entry_type = random.choices(["legal", "illegal"], weights=[55, 45], k=1)[0]
+
+        if entry_type == "legal":
+            method = "vehicle"
+            has_documents = random.random() < 0.88
+        else:
+            method = random.choice(["hiding in vehicle", "jumping border"])
+            has_documents = False
+
+        suspicious = random.random() < 0.20
+
+        return CrossingAttempt(
+            attempt_id=attempt_id,
+            medium="land",
+            method=method,
+            entry_type=entry_type,
+            has_documents=has_documents,
+            suspicious=suspicious,
+        )
+
+
+class AttemptFactory:
+    def __init__(self, strategy: AttemptStrategy):
+        self.strategy = strategy
+
+    def set_strategy(self, strategy: AttemptStrategy) -> None:
+        self.strategy = strategy
+
+    def create(self, attempt_id: int) -> CrossingAttempt:
+        return self.strategy.build(attempt_id)
+
+
+# Design Pattern 2) --> Proxy
+
+class BorderService(ABC):
+    @abstractmethod
+    def process(self, request: CrossingAttempt) -> Optional[str]:
+        pass
+
+
+class RealBorderService(BorderService):
+    def __init__(self, chain, stats):
+        self.chain = chain
+        self.stats = stats
+
+    def process(self, request: CrossingAttempt) -> Optional[str]:
+        result = self.chain.handle(request)
+        self.stats.update_result(request)
+        return result
+
+
+class BorderProxy(BorderService):
+    def __init__(self, real_service: RealBorderService):
+        self._real_service = real_service
+
+    def process(self, request: CrossingAttempt) -> Optional[str]:
+        print(f"Border surveillance: observing attempt {request.attempt_id} ({request.medium})")
+
+        # Illegal crossings
+        if request.entry_type == "illegal":
+            request.result = "Caught"
+            request.caught = True
+            request.reason = f"Caught during illegal crossing via {request.method}"
+
+            # update stats
+            self._real_service.stats.update_result(request)
+
+            return f"Attempt {request.attempt_id}: Caught via {request.method} ({request.medium})"
+
+        # If the person is legal, then go to checkpoint
+        return self._real_service.process(request)
+
+
+# Design Pattern 3) --> Chain of responsability
 
 class Handler(ABC):
     @abstractmethod
@@ -153,7 +208,8 @@ class AbstractHandler(Handler):
 
         return None
 
-# CONCRETE HANDLERS
+
+# Concrete Handlers
 
 class ArrivalHandler(AbstractHandler):
     def handle(self, request: CrossingAttempt) -> Optional[str]:
@@ -178,7 +234,7 @@ class DocumentCheckHandler(AbstractHandler):
                 request.reason = "Missing or invalid documents"
                 return f"Attempt {request.attempt_id}: Rejected - missing documents"
 
-        # If documents are okay (or if illegal entry), continue
+        # If documents are ok (or if illegal entry), continue
         return super().handle(request)
 
 
@@ -195,28 +251,6 @@ class SecurityCheckHandler(AbstractHandler):
                 return f"Attempt {request.attempt_id}: Rejected - security issue"
 
         # If not rejected continue
-        return super().handle(request)
-
-
-class SpecialCaseHandler(AbstractHandler):
-    def handle(self, request: CrossingAttempt) -> Optional[str]:
-        # This handler is used for special rare events
-        if request.special_event is not None:
-
-
-            # 70% chance of being caught
-            if random.random() < 0.70:
-                request.result = "Caught"
-                request.reason = f"Caught during special event ({request.special_event})"
-                request.caught = True
-                return f"Attempt {request.attempt_id}: Caught during {request.special_event}"
-            else:
-                request.result = "Not Caught"
-                request.reason = f"Not caught during special event ({request.special_event})"
-                request.caught = False
-                return f"Attempt {request.attempt_id}: Not caught during {request.special_event}"
-
-        # If no special event happened, continue to final stage
         return super().handle(request)
 
 
@@ -248,14 +282,75 @@ class FinalHandler(AbstractHandler):
 
         return None
 
-#SIMULATION CLASS
+
+# Shared statistics ( protected with a lock)
+
+class Stats:
+    def __init__(self):
+        self.total_attempts = 0
+
+        # Counts of final outcomes
+        self.accepted = 0
+        self.rejected = 0
+        self.caught = 0
+        self.not_caught = 0
+
+        # Counts of entry types
+        self.legal_attempts = 0
+        self.illegal_attempts = 0
+
+        # Save text  of what happened during the simulation
+        self.log = []
+
+        # Lock protects all shared updates
+        # Without this, multiple threads could update stats at the same time
+        # and cause race conditions
+        self.lock = threading.Lock()
+
+    def add_log(self, message: str):
+        # lock for log
+        with self.lock:
+            self.log.append(message)
+
+    def update_result(self, attempt: CrossingAttempt):
+        # counters lock
+        with self.lock:
+            self.total_attempts += 1
+
+            # Count legal vs illegal attempts
+            if attempt.entry_type == "legal":
+                self.legal_attempts += 1
+            else:
+                self.illegal_attempts += 1
+
+            # Count final result category
+            if attempt.result == "Accepted":
+                self.accepted += 1
+            elif attempt.result == "Rejected":
+                self.rejected += 1
+            elif attempt.result == "Caught":
+                self.caught += 1
+
+    def print_summary(self):
+        print("\n" + "=" * 60)
+        print("FINAL SIMULATION SUMMARY")
+        print("=" * 60)
+        print(f"Total attempts processed: {self.total_attempts}")
+        print(f"Legal attempts:          {self.legal_attempts}")
+        print(f"Illegal attempts:        {self.illegal_attempts}")
+        print(f"Accepted:                {self.accepted}")
+        print(f"Rejected:                {self.rejected}")
+        print("=" * 60)
+
+
+# Simulation Class
 
 class BorderSimulation:
     def __init__(self, num_attempts: int = 40, num_threads: int = 4):
         # Number of crossing attempts to simulate
         self.num_attempts = num_attempts
 
-        # Number of worker threads
+        # Number of officer threads
         self.num_threads = num_threads
 
         # Shared queue of attempts
@@ -264,62 +359,37 @@ class BorderSimulation:
 
         self.stats = Stats()
 
-        # Build the chain of responsibility:
+        # building the chain of responsibility:
 
-        # Arrival -> Documents -> Security -> SpecialCase -> Final
+        # Arrival -> Documents -> Security -> Final
         self.chain = ArrivalHandler()
         self.chain.set_next(DocumentCheckHandler()) \
                   .set_next(SecurityCheckHandler()) \
-                  .set_next(SpecialCaseHandler()) \
                   .set_next(FinalHandler())
 
+        # strategy factory
+        self.factory = AttemptFactory(WaterStrategy())
 
-    # Create one random crossing attempt
+        # proxy in front of the real checkpoint service
+        self.real_service = RealBorderService(self.chain, self.stats)
+        self.proxy = BorderProxy(self.real_service)
+
+        # create the DB table w SQL
+        db()
+
+    # create a random crossing attempt
     def generate_attempt(self, attempt_id: int) -> CrossingAttempt:
-
-        # Most attempts are legal
-        entry_type = random.choices(
-            ["legal", "illegal"],
-            weights=[75, 25],
-            k=1
-        )[0]
-
-        # Special events only happen on illegal attempts
-        special_event = None
-        if entry_type == "illegal":
-            # Probability intentionally increased for demo/testing
-            has_special = random.random() < 0.55
-            if has_special:
-                special_event = random.choice(
-                    ["jetski", "catapult", "tunnel", "fence_jump"] #<---- CHANGE EVENTS
-                )
-
-        # Legal attempts may or may not have documents
-        if entry_type == "legal":
-            has_documents = random.random() < 0.90
-        else:
-            # Illegal attempts do not use normal legal documents here
-            has_documents = False
-
-        suspicious = random.random() < 0.20
-
-
-        return CrossingAttempt(
-            attempt_id=attempt_id,
-            entry_type=entry_type,
-            has_documents=has_documents,
-            suspicious=suspicious,
-            special_event=special_event
-        )
-
+        strategy = random.choice([WaterStrategy(), AirStrategy(), LandStrategy()])
+        self.factory.set_strategy(strategy)
+        return self.factory.create(attempt_id)
 
     def prepare_attempts(self):
         for i in range(1, self.num_attempts + 1):
             attempt = self.generate_attempt(i)
             self.attempt_queue.put(attempt)
 
-# Worker method
-    def worker(self, worker_id: int):
+# officer method
+    def officer(self, officer_id: int):
         while True:
             try:
                 # get one attempt from  queue
@@ -329,15 +399,11 @@ class BorderSimulation:
 
             time.sleep(random.uniform(0.1, 0.4))
 
-            result_message = self.chain.handle(attempt)
-
-            self.stats.update_result(attempt)
-
-            # Keep a log
-            log_message = f"[Worker {worker_id}] {result_message}"
+            result_message = self.proxy.process(attempt)
+            log_message = f"[Officer {officer_id}] {result_message}"
 
             self.stats.add_log(log_message)
-
+            save_result(attempt, officer_id)
             print(log_message)
 
             self.attempt_queue.task_done()
@@ -353,7 +419,7 @@ class BorderSimulation:
         print("=" * 60)
 
         for i in range(self.num_threads):
-            thread = threading.Thread(target=self.worker, args=(i + 1,))
+            thread = threading.Thread(target=self.officer, args=(i + 1,))
             threads.append(thread)
             thread.start()
 
@@ -367,11 +433,8 @@ class BorderSimulation:
             print(line)
 
 
-
 if __name__ == "__main__":
-    # Create the simulation with:
-    # - 50 total attempts
-    # - 4 worker threads
+    # Creating the simulation with 50 attempts and 4 threads
     simulation = BorderSimulation(num_attempts=50, num_threads=4)
 
     # Start the simulation
