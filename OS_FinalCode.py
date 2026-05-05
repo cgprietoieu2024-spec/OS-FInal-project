@@ -428,10 +428,6 @@ class BorderSimulation:
 
         self.stats.print_summary()
 
-        print("\nSAMPLE LOG ENTRIES:")
-        for line in self.stats.log[:10]:
-            print(line)
-
 
 if __name__ == "__main__":
     # Creating the simulation with 50 attempts and 4 threads
