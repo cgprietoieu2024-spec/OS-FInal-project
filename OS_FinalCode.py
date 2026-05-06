@@ -3,7 +3,7 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Optional, Any
+from typing import Optional
 import threading
 import queue
 import random
@@ -17,9 +17,20 @@ DB_PATH = "border_simulation.db"
 def db():
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
-        cursor.execute("""CREATE TABLE IF NOT EXISTS results (id INTEGER PRIMARY KEY AUTOINCREMENT,
-            attempt_id INTEGER,medium TEXT,method TEXT,entry_type TEXT,has_documents INTEGER,
-            suspicious INTEGER,result TEXT,reason TEXT,caught INTEGER,officer_id INTEGER)""")
+        cursor.execute("""CREATE TABLE IF NOT EXISTS results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            attempt_id INTEGER,
+            medium TEXT,
+            method TEXT,
+            entry_type TEXT,
+            has_documents INTEGER,
+            suspicious INTEGER,
+            result TEXT,
+            reason TEXT,
+            caught INTEGER,
+            officer_id INTEGER,
+            special_event TEXT
+        )""")
         conn.commit()
 
 
@@ -30,10 +41,21 @@ def save_result(attempt, officer_id: int):
         INSERT INTO results (
             attempt_id, medium, method, entry_type,
             has_documents, suspicious, result, reason,
-            caught, officer_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                       (attempt.attempt_id,attempt.medium,attempt.method,attempt.entry_type,
-            int(attempt.has_documents),int(attempt.suspicious),attempt.result,attempt.reason,
-            None if attempt.caught is None else int(attempt.caught),officer_id))
+            caught, officer_id, special_event
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            attempt.attempt_id,
+            attempt.medium,
+            attempt.method,
+            attempt.entry_type,
+            int(attempt.has_documents),
+            int(attempt.suspicious),
+            attempt.result,
+            attempt.reason,
+            None if attempt.caught is None else int(attempt.caught),
+            officer_id,
+            attempt.special_event
+        ))
         conn.commit()
 
 # Model
@@ -46,8 +68,18 @@ class CrossingAttempt:
     entry_type: str             # legal / illegal
     has_documents: bool
     suspicious: bool
+
+    # Special event
+    # jetski, catapult, etc
+    special_event: Optional[str] = None
+
+    # "Accepted", "Rejected", "Caught", "Not Caught"
     result: str = "Pending"
+
+    # Why?
     reason: str = ""
+
+    # True/False if relevant for caught/not caught situations
     caught: Optional[bool] = None
 
 
@@ -65,10 +97,12 @@ class WaterStrategy(AttemptStrategy):
 
         if entry_type == "legal":
             method = "boat"
-            has_documents = random.random() < 0.90
+            has_documents = random.random() < 0.95
+            special_event = None
         else:
             method = random.choice(["swimming", "jetski"])
             has_documents = False
+            special_event = method
 
         suspicious = random.random() < 0.15
 
@@ -79,6 +113,7 @@ class WaterStrategy(AttemptStrategy):
             entry_type=entry_type,
             has_documents=has_documents,
             suspicious=suspicious,
+            special_event=special_event
         )
 
 
@@ -89,11 +124,13 @@ class AirStrategy(AttemptStrategy):
         if entry_type == "legal":
             method = "plane"
             has_documents = random.random() < 0.95
+            special_event = None
         else:
             method = random.choice(["unauthorized plane", "catapult"])
             has_documents = False
+            special_event = method
 
-        suspicious = random.random() < 0.10
+        suspicious = random.random() < 0.15
 
         return CrossingAttempt(
             attempt_id=attempt_id,
@@ -102,6 +139,7 @@ class AirStrategy(AttemptStrategy):
             entry_type=entry_type,
             has_documents=has_documents,
             suspicious=suspicious,
+            special_event=special_event
         )
 
 
@@ -111,12 +149,14 @@ class LandStrategy(AttemptStrategy):
 
         if entry_type == "legal":
             method = "vehicle"
-            has_documents = random.random() < 0.88
+            has_documents = random.random() < 0.90
+            special_event = None
         else:
-            method = random.choice(["hiding in vehicle", "jumping border"])
+            method = random.choice(["hiding in vehicle", "fence jump"])
             has_documents = False
+            special_event = method
 
-        suspicious = random.random() < 0.20
+        suspicious = random.random() < 0.15
 
         return CrossingAttempt(
             attempt_id=attempt_id,
@@ -125,6 +165,7 @@ class LandStrategy(AttemptStrategy):
             entry_type=entry_type,
             has_documents=has_documents,
             suspicious=suspicious,
+            special_event=special_event
         )
 
 
@@ -166,17 +207,18 @@ class BorderProxy(BorderService):
         print(f"Border surveillance: observing attempt {request.attempt_id} ({request.medium})")
 
         # Illegal crossings
-        if request.entry_type == "illegal":
+        # Small chance to catch illegal attempts early
+        if request.entry_type == "illegal" and random.random() < 0.30:
             request.result = "Caught"
             request.caught = True
-            request.reason = f"Caught during illegal crossing via {request.method}"
+            request.reason = "Caught before checkpoint"
 
             # update stats
             self._real_service.stats.update_result(request)
 
-            return f"Attempt {request.attempt_id}: Caught via {request.method} ({request.medium})"
+            return f"Attempt {request.attempt_id}: Caught before checkpoint"
 
-        # If the person is legal, then go to checkpoint
+        # If the person is legal, or if illegal but not caught early, then go to checkpoint
         return self._real_service.process(request)
 
 
@@ -198,7 +240,6 @@ class AbstractHandler(Handler):
 
     def set_next(self, handler: Handler) -> Handler:
         self._next_handler = handler
-
         return handler
 
     @abstractmethod
@@ -254,6 +295,22 @@ class SecurityCheckHandler(AbstractHandler):
         return super().handle(request)
 
 
+class SpecialCaseHandler(AbstractHandler):
+    def handle(self, request: CrossingAttempt) -> Optional[str]:
+        if request.special_event is not None:
+            if random.random() < 0.70:
+                request.result = "Caught"
+                request.reason = f"Caught during special event ({request.special_event})"
+                request.caught = True
+                return f"Attempt {request.attempt_id}: Caught during {request.special_event}"
+            else:
+                request.result = "Not Caught"
+                request.reason = f"Not caught during special event ({request.special_event})"
+                request.caught = False
+                return f"Attempt {request.attempt_id}: Not caught during {request.special_event}"
+        return super().handle(request)
+
+
 class FinalHandler(AbstractHandler):
     def handle(self, request: CrossingAttempt) -> Optional[str]:
         # Final handler gives a result only if no previous handler already stopped the chain
@@ -299,6 +356,19 @@ class Stats:
         self.legal_attempts = 0
         self.illegal_attempts = 0
 
+        # Total special event
+        self.special_events_triggered = 0
+
+        # Count each special event separately  <---- EDIT EVENTS
+        self.special_event_counts = {
+            "jetski": 0,
+            "swimming": 0,
+            "unauthorized plane": 0,
+            "catapult": 0,
+            "hiding in vehicle": 0,
+            "fence jump": 0,
+        }
+
         # Save text  of what happened during the simulation
         self.log = []
 
@@ -323,6 +393,12 @@ class Stats:
             else:
                 self.illegal_attempts += 1
 
+            # Count special events
+            if attempt.special_event is not None:
+                self.special_events_triggered += 1
+                if attempt.special_event in self.special_event_counts:
+                    self.special_event_counts[attempt.special_event] += 1
+
             # Count final result category
             if attempt.result == "Accepted":
                 self.accepted += 1
@@ -330,6 +406,8 @@ class Stats:
                 self.rejected += 1
             elif attempt.result == "Caught":
                 self.caught += 1
+            elif attempt.result == "Not Caught":
+                self.not_caught += 1
 
     def print_summary(self):
         print("\n" + "=" * 60)
@@ -340,6 +418,14 @@ class Stats:
         print(f"Illegal attempts:        {self.illegal_attempts}")
         print(f"Accepted:                {self.accepted}")
         print(f"Rejected:                {self.rejected}")
+        print(f"Caught:                  {self.caught}")
+        print(f"Not Caught:              {self.not_caught}")
+        print(f"Special events total:    {self.special_events_triggered}")
+
+        print("\nSpecial event breakdown:")
+        for event_name, count in self.special_event_counts.items():
+            print(f"  {event_name}: {count}")
+
         print("=" * 60)
 
 
@@ -361,10 +447,11 @@ class BorderSimulation:
 
         # building the chain of responsibility:
 
-        # Arrival -> Documents -> Security -> Final
+        # Arrival -> Documents -> Security -> Special Case -> Final
         self.chain = ArrivalHandler()
         self.chain.set_next(DocumentCheckHandler()) \
                   .set_next(SecurityCheckHandler()) \
+                  .set_next(SpecialCaseHandler()) \
                   .set_next(FinalHandler())
 
         # strategy factory
@@ -388,7 +475,7 @@ class BorderSimulation:
             attempt = self.generate_attempt(i)
             self.attempt_queue.put(attempt)
 
-# officer method
+    # officer method
     def officer(self, officer_id: int):
         while True:
             try:
@@ -408,7 +495,7 @@ class BorderSimulation:
 
             self.attempt_queue.task_done()
 
-  # Final run
+    # Final run
     def run(self):
         self.prepare_attempts()
 
