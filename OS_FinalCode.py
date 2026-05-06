@@ -19,6 +19,7 @@ def db():
         cursor = conn.cursor()
         cursor.execute("""CREATE TABLE IF NOT EXISTS results (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER,
             attempt_id INTEGER,
             medium TEXT,
             method TEXT,
@@ -31,19 +32,27 @@ def db():
             officer_id INTEGER,
             special_event TEXT
         )""")
+
+        # Add run_id if the table already existed before this change
+        cursor.execute("PRAGMA table_info(results)")
+        columns = {row[1] for row in cursor.fetchall()}
+        if "run_id" not in columns:
+            cursor.execute("ALTER TABLE results ADD COLUMN run_id INTEGER")
+
         conn.commit()
 
 
-def save_result(attempt, officer_id: int):
+def save_result(attempt, officer_id: int, run_id: int):
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute("""
         INSERT INTO results (
-            attempt_id, medium, method, entry_type,
+            run_id, attempt_id, medium, method, entry_type,
             has_documents, suspicious, result, reason,
             caught, officer_id, special_event
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
+            run_id,
             attempt.attempt_id,
             attempt.medium,
             attempt.method,
@@ -445,6 +454,9 @@ class BorderSimulation:
 
         self.stats = Stats()
 
+        # Unique id for this run
+        self.run_id = int(time.time())
+
         # building the chain of responsibility:
 
         # Arrival -> Documents -> Security -> Special Case -> Final
@@ -490,7 +502,7 @@ class BorderSimulation:
             log_message = f"[Officer {officer_id}] {result_message}"
 
             self.stats.add_log(log_message)
-            save_result(attempt, officer_id)
+            save_result(attempt, officer_id, self.run_id)
             print(log_message)
 
             self.attempt_queue.task_done()
